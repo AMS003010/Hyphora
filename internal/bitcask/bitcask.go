@@ -20,6 +20,8 @@ const (
 	dataFileSuffix   = ".db"
 )
 
+const maxFileSize = 128 << 20 // 128 MB
+
 var (
 	ErrKeyNotFound = errors.New("key not found")
 )
@@ -182,6 +184,10 @@ func (bc *Bitcask) Put(key string, value []byte) error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
+	if err := bc.RotateFile(); err != nil {
+		return err
+	}
+
 	rec := make([]byte, recordHeaderSize+len(key)+len(value))
 	rec[0] = 0x0
 	binary.BigEndian.PutUint64(rec[1:9], uint64(len(key)))
@@ -239,21 +245,55 @@ func Open(dir string) (*Bitcask, error) {
 		fmt.Println("Bitcask : ", bc)
 		fmt.Println("")
 	}
-	bc.currID = maxId + 1
-	curPath := filepath.Join(dir, dataFilePrefix+strconv.FormatInt(bc.currID, 10)+dataFileSuffix)
-	file, err := os.OpenFile(curPath, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, err
+	if maxId == -1 {
+		bc.currID = 0
+		currPath := filepath.Join(dir, dataFilePrefix+"0"+dataFileSuffix)
+		file, err := os.OpenFile(currPath, os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		bc.files[0] = file
+		bc.currFile = file
+		bc.currOffset = 0
+		bc.bufw = bufio.NewWriterSize(file, 4096)
+	} else {
+		bc.currID = maxId
+		file := bc.files[maxId]
+		off, err := file.Seek(0, io.SeekEnd)
+		if err != nil {
+			file.Close()
+			return nil, err
+		}
+		bc.currFile = file
+		bc.currOffset = off
+		bc.bufw = bufio.NewWriterSize(file, 4096)
 	}
-	off, err := file.Seek(0, io.SeekEnd)
+
+	return bc, nil
+}
+
+func (bc *Bitcask) RotateFile() error {
+	if bc.currOffset < maxFileSize {
+		return nil
+	}
+
+	if bc.bufw != nil {
+		if err := bc.bufw.Flush(); err != nil {
+			return err
+		}
+	}
+	bc.currFile.Sync()
+	bc.currFile.Close()
+
+	bc.currID++
+	path := filepath.Join(bc.dir, dataFilePrefix+strconv.FormatInt(bc.currID, 10)+dataFileSuffix)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		file.Close()
-		return nil, err
+		return err
 	}
 	bc.files[bc.currID] = file
 	bc.currFile = file
-	bc.currOffset = off
+	bc.currOffset = 0
 	bc.bufw = bufio.NewWriterSize(file, 4096)
-
-	return bc, nil
+	return nil
 }

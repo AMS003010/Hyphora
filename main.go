@@ -16,13 +16,13 @@ func main() {
 	defer bc.Close()
 
 	// Put some keys
-	if err := bc.Put("foo2", []byte("bar")); err != nil {
+	if err := bc.Put("foo", []byte("bar")); err != nil {
 		log.Fatal("put failed:", err)
 	}
-	if err := bc.Put("hello2", []byte("world")); err != nil {
+	if err := bc.Put("hello", []byte("world")); err != nil {
 		log.Fatal("put failed:", err)
 	}
-	if err := bc.Put("waasup2", []byte("Correct")); err != nil {
+	if err := bc.Put("waasup2", []byte("GOOD")); err != nil {
 		log.Fatal("put failed:", err)
 	}
 	// if err := bc.Put("hahahaha", []byte("GOOOOOOOD")); err != nil {
