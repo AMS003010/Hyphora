@@ -1,0 +1,4 @@
+# Hyphora stuff
+/data*
+/cmd
+*.exe
