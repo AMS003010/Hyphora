@@ -297,3 +297,58 @@ func (bc *Bitcask) RotateFile() error {
 	bc.bufw = bufio.NewWriterSize(file, 4096)
 	return nil
 }
+
+func (bc *Bitcask) Entries() (map[string][]byte, error) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+
+	result := make(map[string][]byte, len(bc.keydir))
+	for k := range bc.keydir {
+		val, err := bc.Get(k)
+		if err != nil {
+			return nil, err
+		}
+		result[k] = val
+	}
+	return result, nil
+}
+
+func (bc *Bitcask) RestoreFromSnapshot(data map[string][]byte) error {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	for _, f := range bc.files {
+		f.Close()
+	}
+	bc.files = make(map[int64]*os.File)
+	bc.keydir = make(map[string]entry)
+
+	bc.currID = 0
+	path := filepath.Join(bc.dir, dataFilePrefix+"0"+dataFileSuffix)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	bc.files[0] = file
+	bc.currFile = file
+	bc.currOffset = 0
+	bc.bufw = bufio.NewWriterSize(file, 4096)
+
+	for k, v := range data {
+		if err := bc.Put(k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (bc *Bitcask) ApplyCommand(op, key string, val []byte) error {
+	switch op {
+	case "PUT":
+		return bc.Put(key, val)
+	case "DEL":
+		return bc.Delete(key)
+	default:
+		return fmt.Errorf("unknown operation: %s", op)
+	}
+}
