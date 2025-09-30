@@ -242,8 +242,6 @@ func Open(dir string) (*Bitcask, error) {
 			file.Close()
 			return nil, fmt.Errorf("scan file %s: %w", fpath, err)
 		}
-		fmt.Println("Bitcask : ", bc)
-		fmt.Println("")
 	}
 	if maxId == -1 {
 		bc.currID = 0
