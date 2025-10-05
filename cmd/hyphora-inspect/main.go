@@ -13,10 +13,11 @@ const recordHeaderSize = 1 + 8 + 8
 
 func main() {
 	filePath := flag.String("file", "", "Path to .db file to inspect")
+	fullOutput := flag.Bool("full", false, "Show full value output")
 	flag.Parse()
 
 	if *filePath == "" {
-		fmt.Println("Usage: hyphora-inspect -file=data-0.db")
+		fmt.Println("Usage: hyphora-inspect -file=data-0.db [--full]")
 		return
 	}
 
@@ -25,6 +26,12 @@ func main() {
 		panic(err)
 	}
 	defer f.Close()
+
+	fileInfo, err := f.Stat()
+	if err != nil {
+		panic(err)
+	}
+	fileSize := fileInfo.Size()
 
 	r := bufio.NewReader(f)
 	var offset int64 = 0
@@ -55,9 +62,21 @@ func main() {
 			}
 		}
 
+		valStr := string(val)
+		if !*fullOutput && len(valStr) > 4 {
+			valStr = valStr[0:4]
+		}
+
 		fmt.Printf("offset=%d flags=%02x key=%q value=%q\n",
-			offset, flags, string(key), string(val))
+			offset, flags, string(key), valStr)
 
 		offset += recordHeaderSize + keyLen + valLen
 	}
+
+	fmt.Println()
+	mb := fileSize / (1024 * 1024)
+	kb := (fileSize % (1024 * 1024)) / 1024
+	bytes := fileSize % 1024
+
+	fmt.Printf("Total file size: %d MB, %d KB, %d bytes\n", mb, kb, bytes)
 }
