@@ -15,7 +15,7 @@ import (
 
 type Node struct {
 	Raft  *raft.Raft
-	store *bitcask.Bitcask
+	Store *bitcask.Bitcask
 }
 
 func NewNode(dataDir string, bindAddr string, raftID string) (*Node, error) {
@@ -33,7 +33,7 @@ func NewNode(dataDir string, bindAddr string, raftID string) (*Node, error) {
 	}
 
 	// Open Bitcask
-	store, err := bitcask.Open(filepath.Join(dataDir, "bitcask"))
+	Store, err := bitcask.Open(filepath.Join(dataDir, "bitcask"))
 	if err != nil {
 		return nil, err
 	}
@@ -48,26 +48,26 @@ func NewNode(dataDir string, bindAddr string, raftID string) (*Node, error) {
 		return nil, err
 	}
 
-	// Stable store (BoltDB)
+	// Stable Store (BoltDB)
 	stableStore, err := raftboltdb.NewBoltStore(filepath.Join(raftDir, "stable.db"))
 	if err != nil {
 		return nil, err
 	}
 
-	// Log store (BoltDB)
+	// Log Store (BoltDB)
 	logStore, err := raftboltdb.NewBoltStore(filepath.Join(raftDir, "raft-log.db"))
 	if err != nil {
 		return nil, err
 	}
 
-	// Snapshot store
+	// Snapshot Store
 	snapshots, err := raft.NewFileSnapshotStore(raftDir, 1, os.Stderr)
 	if err != nil {
 		return nil, err
 	}
 
 	// FSM
-	fsm := NewFSM(store)
+	fsm := NewFSM(Store)
 
 	// Raft instance
 	r, err := raft.NewRaft(config, fsm, logStore, stableStore, snapshots, addr)
@@ -77,7 +77,7 @@ func NewNode(dataDir string, bindAddr string, raftID string) (*Node, error) {
 
 	node := &Node{
 		Raft:  r,
-		store: store,
+		Store: Store,
 	}
 
 	// Check if Raft has any existing configuration
@@ -122,5 +122,5 @@ func (n *Node) Apply(op, key string, val []byte) error {
 }
 
 func (n *Node) Get(key string) ([]byte, error) {
-	return n.store.Get(key)
+	return n.Store.Get(key)
 }

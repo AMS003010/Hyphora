@@ -6,7 +6,6 @@ import (
 	"io"
 
 	"github.com/AMS003010/Hyphora/internal/bitcask"
-
 	"github.com/hashicorp/raft"
 )
 

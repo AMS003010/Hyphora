@@ -297,9 +297,6 @@ func (bc *Bitcask) RotateFile() error {
 }
 
 func (bc *Bitcask) Entries() (map[string][]byte, error) {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
-
 	result := make(map[string][]byte, len(bc.keydir))
 	for k := range bc.keydir {
 		val, err := bc.Get(k)
@@ -308,6 +305,42 @@ func (bc *Bitcask) Entries() (map[string][]byte, error) {
 		}
 		result[k] = val
 	}
+	return result, nil
+}
+
+func (bc *Bitcask) compactionEntries() (map[string][]byte, error) {
+	result := make(map[string][]byte, len(bc.keydir))
+	for k, ent := range bc.keydir {
+		// fmt.Printf("compactionEntries: processing key %s in file %d\n", k, ent.fileId)
+		file, ok := bc.files[ent.fileId]
+		if !ok {
+			return nil, fmt.Errorf("data file %d not found for key %s", ent.fileId, k)
+		}
+		// Verify file is open
+		_, err := file.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return nil, fmt.Errorf("data file %d is closed or inaccessible for key %s: %w", ent.fileId, k, err)
+		}
+		buf := make([]byte, ent.size)
+		if _, err := file.ReadAt(buf, ent.offset); err != nil {
+			return nil, fmt.Errorf("failed to read key %s from file %d: %w", k, ent.fileId, err)
+		}
+		if len(buf) < recordHeaderSize {
+			return nil, fmt.Errorf("corrupt record for key %s in file %d", k, ent.fileId)
+		}
+		flags := buf[0]
+		keyLen := int64(binary.BigEndian.Uint64(buf[1:9]))
+		valLen := int64(binary.BigEndian.Uint64(buf[9:17]))
+		if flags&0x1 == 0x1 {
+			continue // Skip tombstones
+		}
+		if int64(len(buf)) < recordHeaderSize+keyLen+valLen {
+			return nil, fmt.Errorf("corrupt record size for key %s in file %d", k, ent.fileId)
+		}
+		value := buf[recordHeaderSize+keyLen : recordHeaderSize+keyLen+valLen]
+		result[k] = value
+	}
+	fmt.Println("compactionEntries: completed")
 	return result, nil
 }
 
@@ -349,4 +382,168 @@ func (bc *Bitcask) ApplyCommand(op, key string, val []byte) error {
 	default:
 		return fmt.Errorf("unknown operation: %s", op)
 	}
+}
+
+func (bc *Bitcask) InitiateCompaction() error {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	fmt.Println("Compaction initiated !!")
+
+	if err := bc.bufw.Flush(); err != nil {
+		return fmt.Errorf("failed to flush buffer: %w", err)
+	}
+	if err := bc.currFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync current file: %w", err)
+	}
+
+	// Validate and reopen files if closed
+	for fid := range bc.files {
+		file, ok := bc.files[fid]
+		if !ok || file == nil {
+			path := filepath.Join(bc.dir, fmt.Sprintf("data-%d.db", fid))
+			f, err := os.OpenFile(path, os.O_RDWR, 0644)
+			if err != nil {
+				return fmt.Errorf("failed to reopen file %d (%s): %w", fid, path, err)
+			}
+			bc.files[fid] = f
+		} else {
+			// Verify file is open
+			_, err := file.Seek(0, io.SeekCurrent)
+			if err != nil {
+				path := filepath.Join(bc.dir, fmt.Sprintf("data-%d.db", fid))
+				f, err := os.OpenFile(path, os.O_RDWR, 0644)
+				if err != nil {
+					return fmt.Errorf("failed to reopen closed file %d (%s): %w", fid, path, err)
+				}
+				bc.files[fid] = f
+			}
+		}
+	}
+
+	entries, err := bc.compactionEntries()
+	if err != nil {
+		return fmt.Errorf("failed to get entries: %w", err)
+	}
+
+	// Close files after reading entries, tolerate sync errors
+	for fid, f := range bc.files {
+		if err := f.Sync(); err != nil {
+			fmt.Printf("Warning: failed to sync file %d: %v\n", fid, err)
+			// Continue to close the file
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("failed to close file %d: %w", fid, err)
+		}
+	}
+	bc.files = make(map[int64]*os.File) // Clear files map
+
+	tempDir := filepath.Join(bc.dir, "compact-tmp")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	var newFiles []string
+	var currFile *os.File
+	var currOffset int64
+	var currId int64 = 0
+	var bufw *bufio.Writer
+
+	newPath := filepath.Join(tempDir, fmt.Sprintf("data-compact-%d.db", currId))
+	currFile, err = os.OpenFile(newPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create temp compacted file %s: %w", newPath, err)
+	}
+	newFiles = append(newFiles, newPath)
+	bufw = bufio.NewWriterSize(currFile, 4096)
+
+	bc.keydir = make(map[string]entry)
+
+	for key, value := range entries {
+		recordSize := int64(recordHeaderSize + len(key) + len(value))
+		if currOffset+recordSize > maxFileSize {
+			if err := bufw.Flush(); err != nil {
+				currFile.Close()
+				return fmt.Errorf("failed to flush compacted file: %w", err)
+			}
+			if err := currFile.Sync(); err != nil {
+				currFile.Close()
+				return fmt.Errorf("failed to sync compacted file: %w", err)
+			}
+			if err := currFile.Close(); err != nil {
+				return fmt.Errorf("failed to close compacted file: %w", err)
+			}
+
+			currId++
+			newPath = filepath.Join(tempDir, fmt.Sprintf("data-compact-%d.db", currId))
+			currFile, err = os.OpenFile(newPath, os.O_CREATE|os.O_RDWR, 0644)
+			if err != nil {
+				return fmt.Errorf("failed to create compacted file %s: %w", newPath, err)
+			}
+			newFiles = append(newFiles, newPath)
+			bufw = bufio.NewWriterSize(currFile, 4096)
+			currOffset = 0
+		}
+
+		rec := make([]byte, recordHeaderSize+len(key)+len(value))
+		rec[0] = 0x0
+		binary.BigEndian.PutUint64(rec[1:9], uint64(len(key)))
+		binary.BigEndian.PutUint64(rec[9:17], uint64(len(value)))
+		copy(rec[17:17+len(key)], []byte(key))
+		copy(rec[17+len(key):], value)
+		if _, err := bufw.Write(rec); err != nil {
+			currFile.Close()
+			return fmt.Errorf("failed to write key %s: %w", key, err)
+		}
+		bc.keydir[key] = entry{fileId: currId, offset: currOffset, size: recordSize}
+		currOffset += recordSize
+	}
+
+	if err := bufw.Flush(); err != nil {
+		currFile.Close()
+		return fmt.Errorf("failed to flush final compacted file: %w", err)
+	}
+	if err := currFile.Sync(); err != nil {
+		currFile.Close()
+		return fmt.Errorf("failed to sync final compacted file: %w", err)
+	}
+	if err := currFile.Close(); err != nil {
+		return fmt.Errorf("failed to close final compacted file: %w", err)
+	}
+
+	oldFiles, err := filepath.Glob(filepath.Join(bc.dir, dataFilePrefix+"*"+dataFileSuffix))
+	if err != nil {
+		return fmt.Errorf("failed to list old files: %w", err)
+	}
+	for _, oldFile := range oldFiles {
+		if err := os.Remove(oldFile); err != nil {
+			return fmt.Errorf("failed to remove old file %s: %w", oldFile, err)
+		}
+	}
+	for i, tempFile := range newFiles {
+		newName := filepath.Join(bc.dir, fmt.Sprintf("data-%d.db", i))
+		if err := os.Rename(tempFile, newName); err != nil {
+			return fmt.Errorf("failed to rename %s to %s: %w", tempFile, newName, err)
+		}
+	}
+
+	bc.files = make(map[int64]*os.File)
+	bc.currID = int64(len(newFiles) - 1)
+	newPath = filepath.Join(bc.dir, fmt.Sprintf("data-%d.db", bc.currID))
+	currFile, err = os.OpenFile(newPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open new current file %s: %w", newPath, err)
+	}
+	bc.files[bc.currID] = currFile
+	bc.currFile = currFile
+	off, err := currFile.Seek(0, io.SeekEnd)
+	if err != nil {
+		return fmt.Errorf("failed to seek current file: %w", err)
+	}
+	bc.currOffset = off
+	bc.bufw = bufio.NewWriterSize(currFile, 4096)
+
+	fmt.Println("Compaction completed successfully")
+	return nil
 }

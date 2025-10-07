@@ -1,6 +1,5 @@
 package main
 
-// add these imports at top of main.go
 import (
 	"encoding/json"
 	"fmt"
@@ -102,6 +101,32 @@ func main() {
 		}
 
 		fmt.Fprintf(w, "Peer %s (%s) added successfully\n", id, addr)
+	})
+
+	http.HandleFunc("/compact", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if node == nil || node.Raft == nil {
+			http.Error(w, "raft not initialized", http.StatusInternalServerError)
+			return
+		}
+		if node.Raft.State() != raft.Leader {
+			http.Error(w, "not leader; send compact to leader", http.StatusBadRequest)
+			return
+		}
+		if err := node.Store.InitiateCompaction(); err != nil {
+			http.Error(w, fmt.Sprintf("Compaction failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		fut := node.Raft.Barrier(5 * time.Second)
+		if err := fut.Error(); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to ensure Raft consistency post-compaction: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "Compaction completed")
 	})
 
 	log.Printf("Hyphora node started at %s with ID %s", bindAddr, raftID)

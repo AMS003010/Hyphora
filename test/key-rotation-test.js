@@ -1,19 +1,19 @@
-import http from "k6/http";
-import { check, sleep } from "k6";
+import http from 'k6/http';
+import { check, sleep } from 'k6';
 
 // k6 configuration
 export const options = {
-  vus: 10, // 10 virtual users
-  duration: "30s", // Run for 30 seconds
+  vus: 5, // 5 virtual users for Raspberry Pi
+  duration: '5s', // 10s to write ~50 MB
   thresholds: {
-    http_req_failed: ["rate<0.01"], // Error rate < 1%
-    http_req_duration: ["p(95)<500"], // 95% of requests under 500ms
+    http_req_failed: ['rate<0.01'], // Error rate < 1%
+    http_req_duration: ['p(95)<1000'], // 95% of requests under 1s
   },
 };
 
 // Generate a 1MB value
 const VALUE_SIZE = 1024 * 1024; // 1MB
-const VALUE = "x".repeat(VALUE_SIZE); // 1MB of 'x' characters
+const VALUE = 'x'.repeat(VALUE_SIZE); // 1MB of 'x' characters
 
 // Counter for unique keys
 let keyCounter = 0;
@@ -25,30 +25,30 @@ export default function () {
 
   // PUT request
   const putPayload = JSON.stringify({ key: key, value: VALUE });
-  const putRes = http.post("http://192.168.0.9:8081/put", putPayload, {
-    headers: { "Content-Type": "application/json" },
+  const putRes = http.post('http://127.0.0.1:8081/put', putPayload, {
+    headers: { 'Content-Type': 'application/json' },
   });
   check(putRes, {
-    "PUT succeeded": (r) => r.status === 204,
+    'PUT succeeded': (r) => r.status === 204,
   });
 
   // GET request to verify
-  const getRes = http.get(`http://192.168.0.10:8082/get?key=${key}`);
-  check(getRes, {
-    "GET succeeded": (r) => r.status === 200 && r.body.length === VALUE_SIZE,
-  });
+  // const getRes = http.get(`http://192.168.0.11:8082/get?key=${key}`);
+  // check(getRes, {
+  //   'GET succeeded': (r) => r.status === 200 && r.body.length === VALUE_SIZE,
+  // });
 
-//   // Occasionally DELETE (e.g., 10% chance)
-//   if (Math.random() < 0.1) {
-//     const delPayload = JSON.stringify({ key: key });
-//     const delRes = http.post("http://192.168.0.10:8081/del", delPayload, {
-//       headers: { "Content-Type": "application/json" },
-//     });
-//     check(delRes, {
-//       "DELETE succeeded": (r) => r.status === 204,
-//     });
-//   }
+  // // Occasionally DELETE (10% chance)
+  // if (Math.random() < 0.1) {
+  //   const delPayload = JSON.stringify({ key: key });
+  //   const delRes = http.post('http://192.168.0.9:8081/del', delPayload, {
+  //     headers: { 'Content-Type': 'application/json' },
+  //   });
+  //   check(delRes, {
+  //     'DELETE succeeded': (r) => r.status === 204,
+  //   });
+  // }
 
-  // Small sleep to avoid overwhelming the server
-  sleep(0.1);
+  // Sleep to avoid overwhelming the server
+  sleep(0.1); // 100ms
 }

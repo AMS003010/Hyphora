@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	// Open or create the Bitcask store in ./data
+	// Open or create the Bitcask Store in ./data
 	bc, err := bitcask.Open("./data")
 	if err != nil {
 		log.Fatalf("failed to open bitcask: %v", err)
