@@ -1,3 +1,4 @@
 # Hyphora stuff
 /data*
 *.exe
+/test/__pycache__

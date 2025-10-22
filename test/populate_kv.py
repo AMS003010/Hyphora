@@ -45,16 +45,18 @@ quotes = [
 ]
 
 n = len(quotes)
-for i in range(n):
-    url = f"http://{HOSTNAME}/put"
-    key_val = i % NO_OF_ENTRIES
-    body = {
-        "key": f"{KEY_FORMAT}_{key_val}",
-        "value": quotes[i]
-    }
-    try:
-        response = requests.post(url, json=body)
-        if not (200 <= response.status_code <= 300):
-            print("PUT K-V request failed: ", body["key"],"-", body["value"][0:7])
-    except Exception as e:
-        print("Error", e)
+if __name__=="__main__":
+    for i in range(n):
+        url = f"http://{HOSTNAME}/put"
+        key_val = i % NO_OF_ENTRIES
+        body = {
+            "key": f"{KEY_FORMAT}_{key_val}",
+            "value": quotes[i]
+        }
+        try:
+            response = requests.post(url, json=body)
+            if not (200 <= response.status_code <= 300):
+                print("PUT K-V request failed: ", body["key"],"-", body["value"][0:7])
+            print("KV ADDED")
+        except Exception as e:
+            print("Error", e)
