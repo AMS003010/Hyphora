@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/AMS003010/Hyphora/internal/raftnode"
@@ -27,6 +28,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to start node: %v", err)
 	}
+
+	// Start automatic compaction
+	go startAutoCompaction(node, dataDir)
 
 	// PUT handler
 	http.HandleFunc("/put", func(w http.ResponseWriter, r *http.Request) {
@@ -80,26 +84,19 @@ func main() {
 			http.Error(w, "id and addr required", http.StatusBadRequest)
 			return
 		}
-
-		// Ensure we have a raft instance
 		if node == nil || node.Raft == nil {
 			http.Error(w, "raft not initialized", http.StatusInternalServerError)
 			return
 		}
-
-		// Optionally ensure this node is the leader before adding a voter
 		if node.Raft.State() != raft.Leader {
 			http.Error(w, "not leader; send addpeer to leader", http.StatusBadRequest)
 			return
 		}
-
-		// Add the peer (wait for completion)
 		fut := node.Raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, time.Second*0)
 		if err := fut.Error(); err != nil {
 			http.Error(w, "failed to add peer: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-
 		fmt.Fprintf(w, "Peer %s (%s) added successfully\n", id, addr)
 	})
 
@@ -131,4 +128,50 @@ func main() {
 
 	log.Printf("Hyphora node started at %s with ID %s", bindAddr, raftID)
 	log.Fatal(http.ListenAndServe(":"+httpPort, nil))
+}
+
+func shouldCompact(dataDir string) (bool, error) {
+	files, err := filepath.Glob(filepath.Join(dataDir, "bitcask", "data-*.db"))
+	if err != nil {
+		return false, fmt.Errorf("failed to list data files: %w", err)
+	}
+
+	const maxFiles = 3
+	return len(files) > maxFiles, nil
+}
+
+func startAutoCompaction(node *raftnode.Node, dataDir string) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if node == nil || node.Raft == nil {
+			log.Println("Auto-compaction: node or Raft not initialized")
+			continue
+		}
+		if node.Raft.State() != raft.Leader {
+			continue
+		}
+
+		needCompaction, err := shouldCompact(dataDir)
+		if err != nil {
+			log.Printf("Auto-compaction: failed to check compaction need: %v", err)
+			continue
+		}
+		if !needCompaction {
+			continue
+		}
+
+		log.Println("Auto-compaction: starting")
+		if err := node.Store.InitiateCompaction(); err != nil {
+			log.Printf("Auto-compaction: failed: %v", err)
+			continue
+		}
+		fut := node.Raft.Barrier(5 * time.Second)
+		if err := fut.Error(); err != nil {
+			log.Printf("Auto-compaction: failed to ensure Raft consistency: %v", err)
+			continue
+		}
+		log.Println("Auto-compaction: completed successfully")
+	}
 }
