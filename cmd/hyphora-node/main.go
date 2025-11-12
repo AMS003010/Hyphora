@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/AMS003010/Hyphora/internal/raftnode"
@@ -134,42 +137,77 @@ func main() {
 			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-
 		if req.Path == "" {
 			http.Error(w, "Field 'path' is required", http.StatusBadRequest)
 			return
 		}
 
-		// Only leader can initiate replication
-		if node.Raft.State() != raft.Leader {
-			leaderAddr := node.Raft.Leader()
-			http.Error(w, fmt.Sprintf("Not leader. Send request to leader at %s", leaderAddr), http.StatusServiceUnavailable)
-			return
-		}
-
-		// Read file
+		// Step 1: Read file from THIS node's local disk
 		data, err := os.ReadFile(req.Path)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to read file: %v", err), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("File not found on this node: %v", err), http.StatusBadRequest)
 			return
 		}
 
-		// Use basename as key
 		key := filepath.Base(req.Path)
 
-		// Apply through Raft → replicates to all nodes
-		if err := node.Apply("PUT", key, data); err != nil {
-			http.Error(w, fmt.Sprintf("Raft apply failed: %v", err), http.StatusInternalServerError)
+		// Step 2: If we are leader → replicate directly
+		if node.Raft.State() == raft.Leader {
+			if err := node.Apply("PUT", key, data); err != nil {
+				http.Error(w, fmt.Sprintf("Raft replication failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "replicated",
+				"key":    key,
+				"size":   len(data),
+				"source": "leader",
+			})
 			return
 		}
 
-		// Success
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"status": "replicated",
-			"key":    key,
-			"size":   fmt.Sprintf("%d bytes", len(data)),
-		})
+		// Step 3: We are follower → forward to leader
+		leaderRaftAddr := node.Raft.Leader()
+		if leaderRaftAddr == "" {
+			http.Error(w, "No leader currently available", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Auto-map Raft port → HTTP port (no hardcoding!)
+		leaderHTTP := map[string]string{
+			":9001": ":8081",
+			":9002": ":8082",
+			":9003": ":8083",
+			":9004": ":8084",
+			":9005": ":8085",
+			// works for any node with pattern :9xxx → :8xxx
+		}[strings.Split(string(leaderRaftAddr), ":")[1]]
+
+		if leaderHTTP == "" {
+			http.Error(w, "Leader HTTP port unknown", http.StatusInternalServerError)
+			return
+		}
+
+		fullLeaderURL := "http://" + strings.Replace(string(leaderRaftAddr), strings.Split(string(leaderRaftAddr), ":")[1], leaderHTTP, 1)
+
+		// Forward the exact same request
+		payload := map[string]string{
+			"path": req.Path,
+		}
+		body, _ := json.Marshal(payload)
+
+		resp, err := http.Post(fullLeaderURL+"/replicate", "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			http.Error(w, "Failed to reach leader", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		// Forward leader's response back to client
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
 	})
 
 	http.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
