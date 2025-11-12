@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -142,7 +143,7 @@ func main() {
 			return
 		}
 
-		// Step 1: Read file from THIS node's local disk
+		// Read file from THIS node's local disk (works even if only on follower)
 		data, err := os.ReadFile(req.Path)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("File not found on this node: %v", err), http.StatusBadRequest)
@@ -151,62 +152,65 @@ func main() {
 
 		key := filepath.Base(req.Path)
 
-		// Step 2: If we are leader → replicate directly
+		// If we are the leader → replicate directly via Raft
 		if node.Raft.State() == raft.Leader {
 			if err := node.Apply("PUT", key, data); err != nil {
 				http.Error(w, fmt.Sprintf("Raft replication failed: %v", err), http.StatusInternalServerError)
 				return
 			}
 
-			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"status": "replicated",
 				"key":    key,
 				"size":   len(data),
 				"source": "leader",
+				"node":   node.Raft.String(),
 			})
 			return
 		}
 
-		// Step 3: We are follower → forward to leader
+		// We are follower → forward to leader
 		leaderRaftAddr := node.Raft.Leader()
 		if leaderRaftAddr == "" {
-			http.Error(w, "No leader currently available", http.StatusServiceUnavailable)
+			http.Error(w, "No leader currently elected", http.StatusServiceUnavailable)
 			return
 		}
 
-		// Auto-map Raft port → HTTP port (no hardcoding!)
-		leaderHTTP := map[string]string{
-			":9001": ":8081",
-			":9002": ":8082",
-			":9003": ":8083",
-			":9004": ":8084",
-			":9005": ":8085",
-			// works for any node with pattern :9xxx → :8xxx
-		}[strings.Split(string(leaderRaftAddr), ":")[1]]
-
-		if leaderHTTP == "" {
-			http.Error(w, "Leader HTTP port unknown", http.StatusInternalServerError)
+		// AUTO CALCULATE HTTP PORT: Raft :9001 → HTTP :8081, etc.
+		raftAddrStr := string(leaderRaftAddr)
+		colonIdx := strings.LastIndex(raftAddrStr, ":")
+		if colonIdx == -1 {
+			http.Error(w, "Invalid leader address format", http.StatusInternalServerError)
 			return
 		}
 
-		fullLeaderURL := "http://" + strings.Replace(string(leaderRaftAddr), strings.Split(string(leaderRaftAddr), ":")[1], leaderHTTP, 1)
-
-		// Forward the exact same request
-		payload := map[string]string{
-			"path": req.Path,
-		}
-		body, _ := json.Marshal(payload)
-
-		resp, err := http.Post(fullLeaderURL+"/replicate", "application/json", bytes.NewBuffer(body))
+		raftPortStr := raftAddrStr[colonIdx+1:] // "9001"
+		raftPortNum, err := strconv.Atoi(raftPortStr)
 		if err != nil {
-			http.Error(w, "Failed to reach leader", http.StatusBadGateway)
+			http.Error(w, "Invalid port in leader address", http.StatusInternalServerError)
+			return
+		}
+
+		leaderHTTPPort := ":" + strconv.Itoa(raftPortNum-1000) // 9001 → 8081
+		leaderURL := raftAddrStr[:colonIdx] + leaderHTTPPort + "/replicate"
+
+		// Forward the exact same request to leader
+		forwardPayload := map[string]string{"path": req.Path}
+		body, _ := json.Marshal(forwardPayload)
+
+		resp, err := http.Post(leaderURL, "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to reach leader at %s: %v", leaderURL, err), http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
 
 		// Forward leader's response back to client
 		w.WriteHeader(resp.StatusCode)
+		if resp.Header.Get("Content-Type") == "application/json" {
+			w.Header().Set("Content-Type", "application/json")
+		}
 		io.Copy(w, resp.Body)
 	})
 
