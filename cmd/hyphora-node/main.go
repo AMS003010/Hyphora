@@ -121,6 +121,75 @@ func main() {
 		fmt.Fprintln(w, "Compaction completed")
 	})
 
+	http.HandleFunc("/replicate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method POST required", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if req.Path == "" {
+			http.Error(w, "Field 'path' is required", http.StatusBadRequest)
+			return
+		}
+
+		// Only leader can initiate replication
+		if node.Raft.State() != raft.Leader {
+			leaderAddr := node.Raft.Leader()
+			http.Error(w, fmt.Sprintf("Not leader. Send request to leader at %s", leaderAddr), http.StatusServiceUnavailable)
+			return
+		}
+
+		// Read file
+		data, err := os.ReadFile(req.Path)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to read file: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Use basename as key
+		key := filepath.Base(req.Path)
+
+		// Apply through Raft → replicates to all nodes
+		if err := node.Apply("PUT", key, data); err != nil {
+			http.Error(w, fmt.Sprintf("Raft apply failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Success
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "replicated",
+			"key":    key,
+			"size":   fmt.Sprintf("%d bytes", len(data)),
+		})
+	})
+
+	http.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "Missing 'key' query param", http.StatusBadRequest)
+			return
+		}
+
+		data, err := node.Get(key)
+		if err != nil {
+			http.Error(w, "File not found: "+err.Error(), http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", key))
+		w.Write(data)
+	})
+
 	log.Printf("Hyphora node started at %s with ID %s", bindAddr, raftID)
 	log.Fatal(http.ListenAndServe(":"+httpPort, nil))
 }
