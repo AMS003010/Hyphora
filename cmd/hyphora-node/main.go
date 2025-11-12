@@ -29,10 +29,8 @@ func main() {
 		log.Fatalf("failed to start node: %v", err)
 	}
 
-	// Start automatic compaction
 	go startAutoCompaction(node, dataDir)
 
-	// PUT handler
 	http.HandleFunc("/put", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Key   string `json:"key"`
@@ -49,7 +47,6 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	// GET handler
 	http.HandleFunc("/get", func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Query().Get("key")
 		val, err := node.Get(key)
@@ -60,7 +57,6 @@ func main() {
 		w.Write(val)
 	})
 
-	// DEL handler
 	http.HandleFunc("/del", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Key string `json:"key"`
@@ -76,7 +72,6 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	// ADDPEER handler
 	http.HandleFunc("/addpeer", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
 		addr := r.URL.Query().Get("addr")
