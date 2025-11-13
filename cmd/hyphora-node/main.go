@@ -191,9 +191,9 @@ func main() {
 			return
 		}
 
-		leaderHTTPPort := ":" + strconv.Itoa(raftPortNum-1000) // "9001" → ":8081"
+		leaderHTTPPort := ":" + strconv.Itoa(raftPortNum-920) // "9001" → ":8081"
 		leaderURL := "http://" + raftAddrStr[:colonIdx] + leaderHTTPPort + "/replicate"
-		fmt.Printf("leaderURL: %s | raftAddrStr: %s | colonIdx: %d | leaderHTTPPort: %s", leaderURL, raftAddrStr, colonIdx, leaderHTTPPort)
+		fmt.Printf("raftPortNumx: %d | leaderHTTPPort: %s", raftPortNum, leaderHTTPPort)
 
 		// Forward request
 		forwardPayload := map[string]string{"path": req.Path}
