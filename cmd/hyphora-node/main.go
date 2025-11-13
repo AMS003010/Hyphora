@@ -143,7 +143,7 @@ func main() {
 			return
 		}
 
-		// Read file from THIS node's local disk (works even if only on follower)
+		// Read file from THIS node's disk
 		data, err := os.ReadFile(req.Path)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("File not found on this node: %v", err), http.StatusBadRequest)
@@ -152,7 +152,7 @@ func main() {
 
 		key := filepath.Base(req.Path)
 
-		// If we are the leader → replicate directly via Raft
+		// CASE 1: We are leader → replicate directly
 		if node.Raft.State() == raft.Leader {
 			if err := node.Apply("PUT", key, data); err != nil {
 				http.Error(w, fmt.Sprintf("Raft replication failed: %v", err), http.StatusInternalServerError)
@@ -161,24 +161,23 @@ func main() {
 
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
-				"status": "replicated",
-				"key":    key,
-				"size":   len(data),
-				"source": "leader",
-				"node":   node.Raft.String(),
+				"status":  "replicated",
+				"key":     key,
+				"size":    len(data),
+				"source":  "leader",
+				"node_id": node.Raft.String(),
 			})
 			return
 		}
 
-		// We are follower → forward to leader
+		// CASE 2: We are follower → forward to leader
 		leaderRaftAddr := node.Raft.Leader()
 		if leaderRaftAddr == "" {
 			http.Error(w, "No leader currently elected", http.StatusServiceUnavailable)
 			return
 		}
 
-		// AUTO CALCULATE HTTP PORT: Raft :9001 → HTTP :8081, etc.
-		raftAddrStr := string(leaderRaftAddr)
+		raftAddrStr := string(leaderRaftAddr) // e.g. "192.168.0.10:9001"
 		colonIdx := strings.LastIndex(raftAddrStr, ":")
 		if colonIdx == -1 {
 			http.Error(w, "Invalid leader address format", http.StatusInternalServerError)
@@ -192,10 +191,10 @@ func main() {
 			return
 		}
 
-		leaderHTTPPort := ":" + strconv.Itoa(raftPortNum-1000) // 9001 → 8081
-		leaderURL := raftAddrStr[:colonIdx] + leaderHTTPPort + "/replicate"
+		leaderHTTPPort := ":" + strconv.Itoa(raftPortNum-1000) // "9001" → ":8081"
+		leaderURL := "http://" + raftAddrStr[:colonIdx] + leaderHTTPPort + "/replicate"
 
-		// Forward the exact same request to leader
+		// Forward request
 		forwardPayload := map[string]string{"path": req.Path}
 		body, _ := json.Marshal(forwardPayload)
 
@@ -206,7 +205,7 @@ func main() {
 		}
 		defer resp.Body.Close()
 
-		// Forward leader's response back to client
+		// Return leader's response
 		w.WriteHeader(resp.StatusCode)
 		if resp.Header.Get("Content-Type") == "application/json" {
 			w.Header().Set("Content-Type", "application/json")
