@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,6 +54,31 @@ func main() {
 			return
 		}
 		if err := node.Apply("PUT", req.Key, []byte(req.Value)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	http.HandleFunc("/put-file", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		if node.Raft.State() != raft.Leader {
+			http.Error(w, "Only leader accepts /put", http.StatusForbidden)
+			return
+		}
+		var req struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		data, _ := base64.StdEncoding.DecodeString(req.Value)
+		if err := node.Apply("PUT", req.Key, data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -185,13 +211,11 @@ func main() {
 		leaderRaftPort := strings.Split(string(leaderAddr), ":")[1]
 		port, _ := strconv.Atoi(leaderRaftPort)
 		leaderHTTPPort := strconv.Itoa(port - 920)
-		leaderURL := "http://" + leaderIP + ":" + leaderHTTPPort + "/put"
+		leaderURL := "http://" + leaderIP + ":" + leaderHTTPPort + "/put-file"
 
-		fmt.Printf("===============> url: %s", leaderURL)
-
-		payload := map[string]any{
+		payload := map[string]string{
 			"key":   filename,
-			"value": data,
+			"value": base64.StdEncoding.EncodeToString(data),
 		}
 		body, _ := json.Marshal(payload)
 
@@ -200,6 +224,12 @@ func main() {
 			http.Error(w, "Failed to reach leader: "+err.Error(), http.StatusBadGateway)
 			return
 		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "replicated",
+			"key":    filename,
+			"size":   len(data),
+			"from":   "follower",
+		})
 		defer resp.Body.Close()
 
 		w.WriteHeader(resp.StatusCode)
