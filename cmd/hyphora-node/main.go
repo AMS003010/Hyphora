@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -130,6 +131,8 @@ func main() {
 			http.Error(w, "Method POST required", http.StatusMethodNotAllowed)
 			return
 		}
+
+		fmt.Printf("OS: %s", runtime.GOOS)
 
 		var req struct {
 			Path string `json:"path"`
