@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +28,7 @@ func main() {
 	raftID := os.Args[3]
 	httpPort := os.Args[4]
 
-	node, err := raftnode.NewNode(dataDir, bindAddr, raftID)
+	node, err := raftnode.NewNode(dataDir, bindAddr, raftID, httpPort)
 	if err != nil {
 		log.Fatalf("failed to start node: %v", err)
 	}
@@ -37,6 +36,14 @@ func main() {
 	go startAutoCompaction(node, dataDir)
 
 	http.HandleFunc("/put", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		if node.Raft.State() != raft.Leader {
+			http.Error(w, "Only leader accepts /put", http.StatusForbidden)
+			return
+		}
 		var req struct {
 			Key   string `json:"key"`
 			Value string `json:"value"`
@@ -128,92 +135,74 @@ func main() {
 
 	http.HandleFunc("/replicate", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "Method POST required", http.StatusMethodNotAllowed)
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
 			return
 		}
-
-		fmt.Printf("OS: %s", runtime.GOOS)
 
 		var req struct {
 			Path string `json:"path"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
 		if req.Path == "" {
-			http.Error(w, "Field 'path' is required", http.StatusBadRequest)
+			http.Error(w, "'path' required", http.StatusBadRequest)
 			return
 		}
 
-		// Read file from THIS node's disk
 		data, err := os.ReadFile(req.Path)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("File not found on this node: %v", err), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("Cannot read file: %v", err), http.StatusBadRequest)
 			return
 		}
 
-		key := filepath.Base(req.Path)
+		filename := filepath.Base(req.Path)
 
-		// CASE 1: We are leader → replicate directly
+		// === LEADER ===
 		if node.Raft.State() == raft.Leader {
-			if err := node.Apply("PUT", key, data); err != nil {
-				http.Error(w, fmt.Sprintf("Raft replication failed: %v", err), http.StatusInternalServerError)
+			if err := node.Apply("PUT", filename, data); err != nil {
+				http.Error(w, "Raft apply failed: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-
-			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
-				"status":  "replicated",
-				"key":     key,
-				"size":    len(data),
-				"source":  "leader",
-				"node_id": node.Raft.String(),
+				"status": "replicated",
+				"key":    filename,
+				"size":   len(data),
+				"from":   "leader",
 			})
 			return
 		}
 
-		// CASE 2: We are follower → forward to leader
-		leaderRaftAddr := node.Raft.Leader()
-		if leaderRaftAddr == "" {
-			http.Error(w, "No leader currently elected", http.StatusServiceUnavailable)
+		// === FOLLOWER: forward to leader ===
+		leaderAddr := node.Raft.Leader()
+		if leaderAddr == "" {
+			http.Error(w, "No leader", http.StatusServiceUnavailable)
 			return
 		}
 
-		raftAddrStr := string(leaderRaftAddr) // e.g. "192.168.0.10:9001"
-		colonIdx := strings.LastIndex(raftAddrStr, ":")
-		if colonIdx == -1 {
-			http.Error(w, "Invalid leader address format", http.StatusInternalServerError)
-			return
+		leaderIP := strings.Split(string(leaderAddr), ":")[0]
+		leaderRaftPort := strings.Split(string(leaderAddr), ":")[1]
+		port, _ := strconv.Atoi(leaderRaftPort)
+		leaderHTTPPort := strconv.Itoa(port - 920)
+		leaderURL := "http://" + leaderIP + ":" + leaderHTTPPort + "/put"
+
+		fmt.Printf("===============> url: %s", leaderURL)
+
+		payload := map[string]any{
+			"key":   filename,
+			"value": data,
 		}
-
-		raftPortStr := raftAddrStr[colonIdx+1:] // "9001"
-		raftPortNum, err := strconv.Atoi(raftPortStr)
-		if err != nil {
-			http.Error(w, "Invalid port in leader address", http.StatusInternalServerError)
-			return
-		}
-
-		leaderHTTPPort := ":" + strconv.Itoa(raftPortNum-920) // "9001" → ":8081"
-		leaderURL := "http://" + raftAddrStr[:colonIdx] + leaderHTTPPort + "/replicate"
-		fmt.Printf("raftPortNumx: %d | leaderHTTPPort: %s", raftPortNum, leaderHTTPPort)
-
-		// Forward request
-		forwardPayload := map[string]string{"path": req.Path}
-		body, _ := json.Marshal(forwardPayload)
+		body, _ := json.Marshal(payload)
 
 		resp, err := http.Post(leaderURL, "application/json", bytes.NewBuffer(body))
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to reach leader at %s: %v", leaderURL, err), http.StatusBadGateway)
+			http.Error(w, "Failed to reach leader: "+err.Error(), http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
 
-		// Return leader's response
 		w.WriteHeader(resp.StatusCode)
-		if resp.Header.Get("Content-Type") == "application/json" {
-			w.Header().Set("Content-Type", "application/json")
-		}
 		io.Copy(w, resp.Body)
 	})
 

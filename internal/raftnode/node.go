@@ -14,11 +14,12 @@ import (
 )
 
 type Node struct {
-	Raft  *raft.Raft
-	Store *bitcask.Bitcask
+	Raft     *raft.Raft
+	Store    *bitcask.Bitcask
+	HTTPPort string
 }
 
-func NewNode(dataDir string, bindAddr string, raftID string) (*Node, error) {
+func NewNode(dataDir string, bindAddr string, raftID string, httpPort string) (*Node, error) {
 	// Register Raft command struct
 	gob.Register(struct {
 		Op  string
@@ -76,8 +77,9 @@ func NewNode(dataDir string, bindAddr string, raftID string) (*Node, error) {
 	}
 
 	node := &Node{
-		Raft:  r,
-		Store: Store,
+		Raft:     r,
+		Store:    Store,
+		HTTPPort: httpPort,
 	}
 
 	// Check if Raft has any existing configuration
