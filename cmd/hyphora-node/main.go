@@ -185,7 +185,6 @@ func main() {
 
 		filename := filepath.Base(req.Path)
 
-		// === LEADER ===
 		if node.Raft.State() == raft.Leader {
 			if err := node.Apply("PUT", filename, data); err != nil {
 				http.Error(w, "Raft apply failed: "+err.Error(), http.StatusInternalServerError)
@@ -200,7 +199,6 @@ func main() {
 			return
 		}
 
-		// === FOLLOWER: forward to leader ===
 		leaderAddr := node.Raft.Leader()
 		if leaderAddr == "" {
 			http.Error(w, "No leader", http.StatusServiceUnavailable)
