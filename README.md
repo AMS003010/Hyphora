@@ -95,8 +95,8 @@ curl --location 'http://<ip-address-of-node>:<port-of-node>/replicate' \
 }'
 ```
 
-If `windows` an example of the path would be `D:\\Stuff\\Pics\\pic.jpeg`
-If `linux` an example of the path would be `/home/pi/Pics/pic.jpeg`
+If `windows` an example of the path would be `D:\\Stuff\\Pics\\pic.jpeg`.
+If `linux` an example of the path would be `/home/pi/Pics/pic.jpeg`.
 
 ### Fetch the replicated file
 
