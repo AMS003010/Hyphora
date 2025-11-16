@@ -31,12 +31,12 @@ Start hyphora in all nodes
 
 `Node 2`
 ```
-./hyphora-node data1 <ip-address-of-node2>:9002 node2 8082
+./hyphora-node data2 <ip-address-of-node2>:9002 node2 8082
 ```
 
 `Node 3`
 ```
-./hyphora-node data2 <ip-address-of-node3>:9003 node3 8083
+./hyphora-node data3 <ip-address-of-node3>:9003 node3 8083
 ```
 
 Add `Node 2` and `Node 3` as peers
